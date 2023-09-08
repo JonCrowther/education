@@ -193,3 +193,212 @@ default              kube-root-ca.crt                                       1   
 ```
 
 The user `jono` has access to configmaps cluster wide, whereas user `bea` has access to configmaps only in the `default` namespace.
+
+### Aggregation
+
+ClusterRoles can use aggregation to create a role that is a combination of other roles. This allows new permissions to be given on the fly, as a controller monitors for any ClusterRoles with the specified matching rule and adds those new ClusterRoles to the aggregating ClusterRole
+
+##### 1. Create ClusterRole with aggregation rule
+
+This ClusterRole has an `aggregationRule` to match any ClusterRole with the label `rbac.example.com/aggregate: "true"`
+
+<details>
+  <summary>aggregator_cluster_role.yaml</summary>
+
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aggregator
+aggregationRule:
+  clusterRoleSelectors:
+  - matchLabels:
+      rbac.example.com/aggregate: "true"
+rules: [] # The control plane automatically fills in the rules
+```
+</details>
+
+This is what the aggregator ClusterRole looks like at first:
+```
+>kubectl describe clusterrole aggregator
+Name:         aggregator
+Labels:       <none>
+Annotations:  <none>
+PolicyRule:
+  Resources  Non-Resource URLs  Resource Names  Verbs
+  ---------  -----------------  --------------  -----
+```
+
+##### 2. Create ClusterRoles with matching label
+
+Below are 2 ClusterRoles that have the label `rbac.example.com/aggregate: "true"`
+
+<details>
+  <summary>aggregated_cluster_role1.yaml</summary>
+
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aggregated-configmaps
+  labels:
+    rbac.example.com/aggregate: "true"
+# When you create the "aggregated-configmaps" ClusterRole,
+# the rules below will be added to the "aggregator" ClusterRole.
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+```
+</details>
+
+After applying this first one, it is added to the aggregator ClusterRole:
+```
+> kubectl describe clusterrole aggregator
+Name:         aggregator
+Labels:       <none>
+Annotations:  <none>
+PolicyRule:
+  Resources   Non-Resource URLs  Resource Names  Verbs
+  ---------   -----------------  --------------  -----
+  configmaps  []                 []              [get list watch]
+```
+
+<details>
+  <summary>aggregated_cluster_role2.yaml</summary>
+
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aggregated-pods
+  labels:
+    rbac.example.com/aggregate: "true"
+# When you create the "aggregated-pods" ClusterRole,
+# the rules below will be added to the "aggregator" ClusterRole.
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["*"]
+```
+</details>
+
+After applying the second one, it also gets added to the aggregator ClusterRole:
+```
+> kubectl describe clusterrole aggregator
+Name:         aggregator
+Labels:       <none>
+Annotations:  <none>
+PolicyRule:
+  Resources   Non-Resource URLs  Resource Names  Verbs
+  ---------   -----------------  --------------  -----
+  configmaps  []                 []              [get list watch]
+  pods        []                 []              [get list watch]
+```
+
+The yaml of the aggregator ClusterRole gets changed as well:
+```
+> kubectl get clusterrole aggregator -o yaml
+aggregationRule:
+  clusterRoleSelectors:
+  - matchLabels:
+      rbac.example.com/aggregate: "true"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"aggregationRule":{"clusterRoleSelectors":[{"matchLabels":{"rbac.example.com/aggregate":"true"}}]},"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"annotations":{},"name":"aggregator"},"rules":[]}
+  creationTimestamp: "2023-09-08T12:43:35Z"
+  name: aggregator
+  resourceVersion: "3749"
+  uid: 9f8a5737-a744-4b5f-9190-151d7d3aef72
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - '*'
+```
+
+#### 3. Create Role with matching label
+
+Only ClusterRoles can be added via `aggregationRule`. There is no `roleSelector` ([link](https://dev-k8sref-io.web.app/docs/authorization/clusterrole-v1/)). Adding the label to a Role does nothing
+
+<details>
+  <summary>aggregated_role.yaml</summary>
+
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aggregated-services
+  labels:
+    rbac.example.com/aggregate: "true"
+# When you create the "aggregated-services" Role,
+# the rules below will NOT be added to the "aggregator" ClusterRole.
+# Only ClusterRoles can be added via aggregation.
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "update", "create"]
+```
+</details>
+
+The `aggregator` ClusterRole does not get updated:
+```
+> kubectl describe clusterrole aggregator
+Name:         aggregator
+Labels:       <none>
+Annotations:  <none>
+PolicyRule:
+  Resources   Non-Resource URLs  Resource Names  Verbs
+  ---------   -----------------  --------------  -----
+  pods        []                 []              [*]
+  configmaps  []                 []              [get list watch]
+```
+
+#### 4. Apply ClusterRoleBinding for the aggregator
+
+Create a ClusterRoleBinding for the user `maddy`
+
+<details>
+  <summary>aggregated_cluster_role_binding.yaml</summary>
+
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aggregated-crb
+subjects:
+- kind: User
+  name: maddy # Name is case sensitive
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: aggregator
+  apiGroup: rbac.authorization.k8s.io
+```
+</details>
+
+Now user `maddy` can access pods and configmaps cluster wide
+```
+> kubectl get pods -A --as maddy
+NAMESPACE            NAME                                         READY   STATUS    RESTARTS   AGE
+kube-system          coredns-5d78c9869d-57m62                     1/1     Running   0          56m
+...
+
+> kubectl get cm -A --as maddy
+NAMESPACE            NAME                                                   DATA   AGE
+default              kube-root-ca.crt                                       1      56m
+...
+```
