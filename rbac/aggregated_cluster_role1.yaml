@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aggregated-configmaps
+  labels:
+    rbac.example.com/aggregate: "true"
+# When you create the "aggregated-configmaps" ClusterRole,
+# the rules below will be added to the "aggregator" ClusterRole.
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]

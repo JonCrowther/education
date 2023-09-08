@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aggregated-services
+  labels:
+    rbac.example.com/aggregate: "true"
+# When you create the "aggregated-services" Role,
+# the rules below will NOT be added to the "aggregator" ClusterRole.
+# Only ClusterRoles can be added via aggregation.
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "update", "create"]
